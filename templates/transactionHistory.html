@@ -1,0 +1,145 @@
+{% extends 'layout.html' %}
+{% block body %}
+<div class="container mt-4">
+
+    <h2 class="text-center text-light mb-3">Transaction History</h2>
+
+    <!-- Filter Form -->
+    <div class="card bg-dark text-light p-3 mb-4">
+        <form method="POST" action="">
+            <div class="form-row">
+                <div class="form-group col-md-4">
+                    <select name="month" id="month" class="form-control">
+                        <option value="00">Select Month</option>
+                        <option value="01">January</option>
+                        <option value="02">February</option>
+                        <option value="03">March</option>
+                        <option value="04">April</option>
+                        <option value="05">May</option>
+                        <option value="06">June</option>
+                        <option value="07">July</option>
+                        <option value="08">August</option>
+                        <option value="09">September</option>
+                        <option value="10">October</option>
+                        <option value="11">November</option>
+                        <option value="12">December</option>
+                    </select>
+                </div>
+
+                <div class="form-group col-md-4">
+                    <input type="number" placeholder="Select Year" name="year" class="form-control" />
+                </div>
+
+                <div class="form-group col-md-2">
+                    <button type="submit" class="btn btn-success w-100">Filter</button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    {% if transactions %}
+    <div class="card p-3 bg-dark text-light">
+
+        <!-- Summary Cards -->
+        <div class="row text-center mb-3">
+            <div class="col-md-4">
+                <div class="card bg-secondary p-2">
+                    <h6>Monthly Salary</h6>
+                    <h4 class="green-text">₹ {{ monthly_salary }}</h4>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card bg-secondary p-2">
+                    <h6>Total Spent</h6>
+                    <h4 class="text-danger">₹ {{ totalExpenses }}</h4>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card bg-secondary p-2">
+                    <h6>Saved Salary</h6>
+                    <h4 class="text-info">₹ {{ saved_salary }}</h4>
+                </div>
+            </div>
+        </div>
+
+        <!-- Pie Chart Button -->
+        <div class="text-center mb-3">
+            <button class="btn btn-warning" id="showPieBtn">View Savings Pie Chart</button>
+        </div>
+
+        <!-- Hidden Pie Chart -->
+        <div id="pieContainer" style="display:none;">
+            <h4 class="text-center text-light mt-2">Savings Breakdown</h4>
+            <canvas id="savePie" width="350" height="350" style="margin:auto;"></canvas>
+        </div>
+
+		<div class="text-center mt-4">
+            <h4 class="text-light">Yearly Saved Salary Chart</h4>
+            <canvas id="savedYearBar" width="400" height="350"></canvas>
+        </div>
+
+
+        <div class="table-responsive mt-4">
+            <table class="table table-dark table-hover">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Amount</th>
+                        <th>Category</th>
+                        <th>Description</th>
+                        <th>Edit</th>
+                        <th>Delete</th>
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for transaction in transactions %}
+                    <tr>
+                        <td>{{transaction.date}}</td>
+                        <td>{{transaction.amount}}</td>
+                        <td>{{transaction.category}}</td>
+                        <td>{{transaction.description}}</td>
+                        <td><a href="editTransaction/{{transaction.id}}" class="btn btn-primary btn-sm">Edit</a></td>
+                        <td>
+                            <form method="POST" action="{{ url_for('deleteTransaction', id=transaction.id) }}">
+                                <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+
+            </table>
+        </div>
+    </div>
+
+    {% else %}
+    <h4 class="text-light text-center mt-3">No transactions found</h4>
+    {% endif %}
+</div>
+
+<!-- Pie Chart Script -->
+{% if transactions %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+document.getElementById("showPieBtn").addEventListener("click", function () {
+    document.getElementById("pieContainer").style.display = "block";
+
+    const spent = {{ totalExpenses | tojson }};
+    const saved = {{ saved_salary | tojson }};
+
+    new Chart(document.getElementById("savePie"), {
+        type: "pie",
+        data: {
+            labels: ["Spent", "Saved"],
+            datasets: [{
+                data: [spent, saved],
+                backgroundColor: ["#ff4d4d", "#4bc0c0"]
+            }]
+        }
+    });
+});
+</script>
+
+{% endif %}
+{% endblock %}
