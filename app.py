@@ -1,3 +1,4 @@
+import os
 from data_cleaning import get_clean_data_for_user
 from flask import Flask, render_template, request, flash, redirect, url_for, session, logging, jsonify, Response
 from wtforms import Form, StringField, PasswordField, TextAreaField, validators, SubmitField,DecimalField, SelectField
@@ -75,10 +76,13 @@ def signup():
         password   = sha256_crypt.encrypt(str(form.password.data))
 
         db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="",
-    database="expense_tracker")
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
+)
+
         cur = db.cursor(dictionary=True)
         cur.execute("SELECT * FROM users WHERE email=%s", [email])
         user = cur.fetchone()
@@ -139,11 +143,13 @@ def login():
         password_input = form.password.data
 
         db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="",
-        database="expense_tracker"
-    )
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
+)
+
         cur = db.cursor(dictionary=True)
         result = cur.execute(
             "SELECT * FROM users WHERE username = %s", [username])
@@ -238,11 +244,13 @@ def addTransactions():
             date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         db = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="",
-            database="expense_tracker"
-        )
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
+)
+
         cur = db.cursor(dictionary=True)
 
         cur.execute(
@@ -260,11 +268,13 @@ def addTransactions():
 
     # ---------- GET: Load page with salary, expenses, categories ----------
     db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="",
-        database="expense_tracker"
-    )
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
+)
+
     cur = db.cursor(dictionary=True)
 
     # Total monthly expenses
@@ -338,11 +348,13 @@ def transactionHistory():
     year = None
 
     db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="",
-    database="expense_tracker"
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
 )
+
     cur = db.cursor(dictionary=True)
 
 
@@ -430,11 +442,13 @@ def transactionHistory():
 def editCurrentMonthTransaction(id):
     # Create cursor
     db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="",
-    database="expense_tracker"
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
 )
+
     cur = db.cursor(dictionary=True)
 
 
@@ -484,11 +498,13 @@ def editCurrentMonthTransaction(id):
 @is_logged_in
 def deleteCurrentMonthTransaction(id):
     db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="",
-    database="expense_tracker"
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
 )
+
     cur = db.cursor(dictionary=True)    
     cur.execute("DELETE FROM transactions WHERE id=%s AND user_id=%s", (id, session['userID']))
     db.commit()
@@ -578,11 +594,13 @@ def reset_token(token):
 @app.route('/category-data')
 def category_data():
     db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="",
-    database="expense_tracker"
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
 )
+ 
     cur = db.cursor(dictionary=True)
 
 
@@ -678,11 +696,13 @@ def dashboard():
 
     # ---- Yearly Saved Salary Calculation ----
     db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="",
-    database="expense_tracker"
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
 )
+
     cur = db.cursor(dictionary=True)
 
     cur.execute("""
@@ -748,11 +768,13 @@ def addCategory():
             return redirect(url_for('manageCategories'))
 
         db = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="",
-            database="expense_tracker"
-        )
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
+)
+
         cur = db.cursor(dictionary=True)
 
         cur.execute(
@@ -773,11 +795,13 @@ def addCategory():
 @is_logged_in
 def manageCategories():
     db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="",
-    database="expense_tracker"
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
 )
+
     cur = db.cursor(dictionary=True)
 
     cur.execute("SELECT * FROM categories WHERE user_id=%s", (session['userID'],))
@@ -790,11 +814,13 @@ def manageCategories():
 @is_logged_in
 def editCategory(id):
     db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="",
-        database="expense_tracker"
-    )
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
+)
+
     cur = db.cursor(dictionary=True)
 
     # --- Fetch category ---
@@ -826,11 +852,13 @@ def editCategory(id):
 @is_logged_in
 def deleteCategory(id):
     db = mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="",
-        database="expense_tracker"
-    )
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
+)
+
     cur = db.cursor(dictionary=True)
 
     cur.execute("DELETE FROM categories WHERE id=%s AND user_id=%s", (id, session['userID']))
@@ -847,11 +875,13 @@ def deleteCategory(id):
 @is_logged_in
 def deleteTransaction(id):
     db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="",
-    database="expense_tracker"
+    host=os.getenv("MYSQLHOST"),
+    user=os.getenv("MYSQLUSER"),
+    password=os.getenv("MYSQLPASSWORD"),
+    database=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
 )
+
     cur = db.cursor(dictionary=True)
 
     cur.execute("DELETE FROM transactions WHERE id=%s AND user_id=%s", (id, session['userID']))
@@ -862,6 +892,9 @@ def deleteTransaction(id):
     return redirect(url_for('transactionHistory'))
     
 
-if __name__ == '__main__':
-    app.run(debug=True)
-
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        debug=False
+    )
