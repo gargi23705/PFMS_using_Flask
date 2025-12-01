@@ -84,7 +84,3 @@ Open [http://localhost:5000](http://localhost:5000) to view it in the browser.
  <img src="./static/line.png">
 </p>
 
-## In collaboration with:
-
-- [Kavish Shah](https://github.com/KavishShah09)
-- [Yash Jhaveri](https://github.com/yashjhaveri05)
