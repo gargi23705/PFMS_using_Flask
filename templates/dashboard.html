@@ -1,5 +1,6 @@
 {% extends "layout.html" %}
 {% block body %}
+
 <div class="container mt-4 text-light">
   <div class="d-flex justify-content-between align-items-center mb-3">
     <h2 class="mb-0">Analytics Dashboard</h2>
@@ -7,6 +8,28 @@
       <a class="btn btn-sm btn-outline-light" href="{{ url_for('addTransactions') }}">Add Data</a>
       <a class="btn btn-sm btn-outline-light" href="{{ url_for('transactionHistory') }}">History</a>
     </div>
+  </div>
+
+  <!-- ✔ Excel Upload Area -->
+  <div class="card bg-dark text-white p-3 mb-4">
+    <h4>Upload Excel File for Prediction</h4>
+
+    <form action="/upload_excel" method="POST" enctype="multipart/form-data">
+      <div class="row">
+        <div class="col-md-8">
+          <input type="file" name="excel_file" class="form-control" required>
+        </div>
+        <div class="col-md-4">
+          <button class="btn btn-success w-100">Upload & Train</button>
+        </div>
+      </div>
+    </form>
+
+    {% if prediction %}
+      <hr class="bg-secondary">
+      <h5>Predicted Expense for Next Month:</h5>
+      <h3 class="text-warning">₹{{ prediction }}</h3>
+    {% endif %}
   </div>
 
   <!-- Summary cards -->
@@ -62,9 +85,7 @@
       <div class="card bg-dark text-white p-3">
         <div class="card-body">
           <h5 class="card-title">Category Breakdown</h5>
-          <div id="pieGraph">
-            {{ pie_graph | safe }}
-          </div>
+          <div id="pieGraph">{{ pie_graph | safe }}</div>
           <hr class="bg-secondary">
           <h6>Top categories</h6>
           <ul class="list-unstyled">
@@ -100,12 +121,159 @@
     </div>
 
     <div class="text-center mt-4">
-    <h4 class="text-light">Yearly Saved Salary Chart</h4>
-    <canvas id="yearBar" width="400" height="350"></canvas>
+      <h4 class="text-light">Yearly Saved Salary Chart</h4>
+      <canvas id="yearBar" width="400" height="350"></canvas>
     </div>
-
   </div>
 </div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+const ctx = document.getElementById("yearBar").getContext("2d");
+
+new Chart(ctx, {
+    type: "bar",
+    data: {
+        labels: {{ yearly_labels | tojson }},
+        datasets: [{
+            label: "Saved Salary",
+            data: {{ yearly_saved_values | tojson }},
+            backgroundColor: "#4bc0c0"
+        }]
+    },
+    options: {
+        responsive: true,
+        scales: { y: { beginAtZero: true } }
+    }
+});{% extends "layout.html" %}
+{% block body %}
+
+<div class="container mt-4 text-light">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0">Analytics Dashboard</h2>
+    <div>
+      <a class="btn btn-sm btn-outline-light" href="{{ url_for('addTransactions') }}">Add Data</a>
+      <a class="btn btn-sm btn-outline-light" href="{{ url_for('transactionHistory') }}">History</a>
+    </div>
+  </div>
+
+  <!-- ✔ Excel Upload Area -->
+  <div class="card bg-dark text-white p-3 mb-4">
+    <h4>Upload Excel File for Prediction</h4>
+
+    <form action="/upload_excel" method="POST" enctype="multipart/form-data">
+      <div class="row">
+        <div class="col-md-8">
+          <input type="file" name="excel_file" class="form-control" required>
+        </div>
+        <div class="col-md-4">
+          <button class="btn btn-success w-100">Upload & Train</button>
+        </div>
+      </div>
+    </form>
+
+    {% if prediction %}
+      <hr class="bg-secondary">
+      <h5>Predicted Expense for Next Month:</h5>
+      <h3 class="text-warning">₹{{ prediction }}</h3>
+    {% endif %}
+  </div>
+
+  <!-- Summary cards -->
+  <div class="row">
+    <div class="col-md-3 mb-3">
+      <div class="card bg-secondary text-white p-3">
+        <div class="card-body">
+          <h6>Total Spent</h6>
+          <h3>₹{{ '%.2f'|format(total_spent) }}</h3>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3 mb-3">
+      <div class="card bg-secondary text-white p-3">
+        <div class="card-body">
+          <h6>Average</h6>
+          <h3>₹{{ '%.2f'|format(avg_spent) }}</h3>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3 mb-3">
+      <div class="card bg-secondary text-white p-3">
+        <div class="card-body">
+          <h6>Max Expense</h6>
+          <h3>₹{{ '%.2f'|format(max_spent) }}</h3>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3 mb-3">
+      <div class="card bg-secondary text-white p-3">
+        <div class="card-body">
+          <h6>Min Expense</h6>
+          <h3>₹{{ '%.2f'|format(min_spent) }}</h3>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="row">
+    <div class="col-lg-8 mb-3">
+      <div class="card bg-dark text-white p-3">
+        <div class="card-body">
+          <h5 class="card-title">Monthly Trend</h5>
+          <div id="monthlyGraph">
+            {{ monthly_graph | safe }}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4 mb-3">
+      <div class="card bg-dark text-white p-3">
+        <div class="card-body">
+          <h5 class="card-title">Category Breakdown</h5>
+          <div id="pieGraph">{{ pie_graph | safe }}</div>
+          <hr class="bg-secondary">
+          <h6>Top categories</h6>
+          <ul class="list-unstyled">
+            {% for c in top_categories %}
+              <li>{{ c.category }} — ₹{{ '%.2f'|format(c.amount) }}</li>
+            {% endfor %}
+            {% if top_categories|length == 0 %}
+              <li>No data yet</li>
+            {% endif %}
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="col-md-8 mb-3">
+      <div class="card bg-dark text-white p-3">
+        <div class="card-body">
+          <h5 class="card-title">Daily (last 30 days)</h5>
+          <div id="dailyGraph">{{ daily_graph | safe }}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-4 mb-3">
+      <div class="card bg-dark text-white p-3">
+        <div class="card-body">
+          <h5 class="card-title">Yearly Summary</h5>
+          <div id="yearlyGraph">{{ yearly_graph | safe }}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="text-center mt-4">
+      <h4 class="text-light">Yearly Saved Salary Chart</h4>
+      <canvas id="yearBar" width="400" height="350"></canvas>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 const ctx = document.getElementById("yearBar").getContext("2d");
@@ -126,19 +294,9 @@ new Chart(ctx, {
     }
 });
 </script>
+
 {% endblock %}
 
-<script>
-new Chart(document.getElementById("yearBar"), {
-    type: "bar",
-    data: {
-        labels: {{ yearly_labels | tojson }},
-        datasets: [{
-            label: "Saved Salary",
-            data: {{ yearly_saved_values | tojson }},
-            backgroundColor: "blue"
-        }]
-    }
-});
 </script>
 
+{% endblock %}

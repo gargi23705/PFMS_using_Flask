@@ -1,56 +1,40 @@
 import os
-from data_cleaning import get_clean_data_for_user
-from flask import Flask, render_template, request, flash, redirect, url_for, session, logging, jsonify, Response
-from wtforms import Form, StringField, PasswordField, TextAreaField, validators, SubmitField,DecimalField, SelectField
-from wtforms.validators import DataRequired, Length
-from passlib.hash import sha256_crypt
-from functools import wraps
-import timeago
+import sqlite3
 import datetime
-from wtforms import StringField
-from wtforms.validators import Email
+import timeago
+import pandas as pd
+from functools import wraps
+import pickle
+
+from data_cleaning import get_clean_data_for_user
+from flask import Flask, render_template, request, flash, redirect, url_for, session, jsonify
+from passlib.hash import sha256_crypt
+from wtforms import Form, StringField, PasswordField, validators
+from wtforms import SubmitField, DecimalField, SelectField
 from itsdangerous import URLSafeTimedSerializer as Serializer
-from flask_mail import Mail, Message
 from flask_wtf import FlaskForm
 import plotly.graph_objects as go
-import mysql.connector
-import pandas as pd
-
-# import _mysql_connector 
-
-app = Flask(__name__, static_url_path='/static')
-
-app.secret_key = 'supersecretgargi'
-
-# app.config.from_pyfile('config.py')
-app.config['MYSQL_HOST'] = 'localhost'
-app.config['MYSQL_USER'] = 'root'
-app.config['MYSQL_PASSWORD'] = ''   # EMPTY PASSWORD for XAMPP
-app.config['MYSQL_DB'] = 'expense_tracker'
-app.config['MYSQL_CURSORCLASS'] = 'DictCursor'
 
 
-# FLASK-MYSQLDB (only if your project uses MySQL queries)
+def get_db():
+    db = sqlite3.connect("expense_tracker.db")
+    db.row_factory = sqlite3.Row
+    return db
 
 
-mail = Mail(app)
+app = Flask(__name__, static_url_path="/static")
+app.secret_key = "supersecretgargi"
 
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-
-@app.route('/about')
-def about():
-    return render_template('about.html')
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+MODEL_PATH = "model.pkl"
 
 
-
+# ----------------- SIGNUP FORM -----------------
 class SignUpForm(Form):
     first_name = StringField('First Name', [validators.Length(min=1, max=100)])
     last_name = StringField('Last Name', [validators.Length(min=1, max=100)])
-    email = StringField('Email address', [
-                       validators.DataRequired(), validators.Email()])
+    email = StringField('Email', [validators.DataRequired(), validators.Email()])
     username = StringField('Username', [validators.Length(min=4, max=100)])
     password = PasswordField('Password', [
         validators.DataRequired(),
@@ -59,842 +43,836 @@ class SignUpForm(Form):
     confirm = PasswordField('Confirm Password')
 
 
+# ----------------- SIGNUP ROUTE -----------------
 @app.route('/signup', methods=['GET', 'POST'])
 def signup():
-    if 'logged_in' in session and session['logged_in'] == True:
-        flash('You are already logged in', 'info')
+    if 'logged_in' in session:
         return redirect(url_for('addTransactions'))
 
     form = SignUpForm(request.form)
 
     if request.method == 'POST' and form.validate():
+        db = get_db()
+        cur = db.cursor()
 
-        first_name = form.first_name.data
-        last_name  = form.last_name.data
-        email      = form.email.data
-        username   = form.username.data
-        password   = sha256_crypt.encrypt(str(form.password.data))
+        email = form.email.data
+        username = form.username.data
 
-        db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
-
-        cur = db.cursor(dictionary=True)
-        cur.execute("SELECT * FROM users WHERE email=%s", [email])
-        user = cur.fetchone()
-
-        if user and sha256_crypt.verify(password, user['password']):
-          session['logged_in'] = True
-          session['username']  = user['username']
-          session['role']      = user['role']   # IMPORTANT
-
-        # Check email already exists
-        result = cur.execute("SELECT * FROM users WHERE email=%s", [email])
-
-        if result > 0:
-            flash('Email already exists. Try another one.', 'info')
+        cur.execute("SELECT * FROM users WHERE email = ?", (email,))
+        if cur.fetchone():
+            flash("Email already exists", "warning")
             return redirect(url_for('signup'))
-        else:
-            cur.execute("""
-                INSERT INTO users(first_name, last_name, email, username, password)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (first_name, last_name, email, username, password))
 
-            db.commit()
-            cur.close()
+        hashed_pw = sha256_crypt.hash(str(form.password.data))
 
-            flash('You are now registered and can log in', 'success')
-            return redirect(url_for('login'))
+        cur.execute("""
+            INSERT INTO users (first_name, last_name, email, username, password)
+            VALUES (?, ?, ?, ?, ?)
+        """, (form.first_name.data, form.last_name.data, email, username, hashed_pw))
 
-    return render_template('signUp.html', form=form)
+        db.commit()
+        flash("Account created. Please login.", "success")
+        return redirect(url_for('login'))
+
+    return render_template("signUp.html", form=form)
 
 
-
+# ----------------- LOGIN FORM -----------------
 class LoginForm(Form):
     username = StringField('Username', [validators.Length(min=4, max=100)])
-    password = PasswordField('Password', [
-        validators.DataRequired(),
-    ])
+    password = PasswordField('Password', [validators.DataRequired()])
 
-class TransactionForm(FlaskForm):
-    amount = DecimalField('Amount', validators=[DataRequired()])
-    description = StringField('Description', validators=[DataRequired()])
-    category = SelectField('Category', choices=[
-        ('Food', 'Food'),
-        ('Transportation', 'Transportation'),
-        ('Clothing', 'Clothing'),
-        ('Bills and Taxes', 'Bills and Taxes'),
-        ('Other', 'Other')
-    ], validators=[DataRequired()])
-    submit = SubmitField('Submit')
 
+# ----------------- LOGIN ROUTE -----------------
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    if 'logged_in' in session and session['logged_in'] == True:
-        flash('You are already logged in', 'info')
-        return redirect(url_for('addTransactions'))
     form = LoginForm(request.form)
-    if request.method == 'POST' and form.validate():
-        username = form.username.data
-        password_input = form.password.data
 
-        db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
+    if request.method == "POST" and form.validate():
+        db = get_db()
+        cur = db.cursor()
 
-        cur = db.cursor(dictionary=True)
-        result = cur.execute(
-            "SELECT * FROM users WHERE username = %s", [username])
-        data = cur.fetchone()
+        cur.execute("SELECT * FROM users WHERE username = ?", (form.username.data,))
+        user = cur.fetchone()
 
-        if data :
-            userID = data['id']
-            password = data['password']
-            role = data['role']
+        if user and sha256_crypt.verify(form.password.data, user["password"]):
+            session['logged_in'] = True
+            session['username'] = user["username"]
+            session['userID'] = user["id"]
+            session['role'] = user["role"]
+            flash("Logged in successfully", "success")
+            return redirect(url_for("addTransactions"))
 
-            if sha256_crypt.verify(password_input, password):
-                session['logged_in'] = True
-                session['username'] = username
-                session['role'] = role
-                session['userID'] = userID
-                flash('You are now logged in', 'success')
-                return redirect(url_for('addTransactions'))
-            else:
-                error = 'Invalid Password'
-                return render_template('login.html', form=form, error=error)
-            
-            cur.close()
+        flash("Invalid username or password", "danger")
 
-        else:
-            error = 'Username not found'
-            return render_template('login.html', form=form, error=error)
-
-    return render_template('login.html', form=form)
+    return render_template("login.html", form=form)
 
 
+# ----------------- LOGIN CHECK DECORATOR -----------------
 def is_logged_in(f):
     @wraps(f)
     def wrap(*args, **kwargs):
-        if 'logged_in' in session:
+        if "logged_in" in session:
             return f(*args, **kwargs)
-        else:
-            flash('Please login', 'info')
-            return redirect(url_for('login'))
+        flash("Please login first", "warning")
+        return redirect(url_for('login'))
     return wrap
 
 
-# salary
+# ----------------- LOGOUT -----------------
 @app.route('/logout')
-@is_logged_in
 def logout():
     session.clear()
-    flash('You are now logged out', 'success')
-    return redirect(url_for('login'))
+    flash("You are logged out", "success")
+    return redirect(url_for("login"))
 
+# ----------------- ADD SALARY -----------------
 @app.route('/addSalary', methods=['GET', 'POST'])
 @is_logged_in
 def addSalary():
-    if request.method == 'POST':
+    if request.method == "POST":
         salary_amount = request.form['salary_amount']
         month = datetime.datetime.now().strftime("%m")
         year = datetime.datetime.now().strftime("%Y")
+        created_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="",
-    database="expense_tracker"
-)
-        cur = db.cursor(dictionary=True)
+        db = get_db()
+        cur = db.cursor()
 
-        cur.execute(
-            "INSERT INTO salary(user_id, salary_amount, month, year) VALUES (%s, %s, %s, %s)",
-            (session['userID'], salary_amount, month, year)
-        )
+        cur.execute("""
+            INSERT INTO salary (user_id, salary_amount, month, year, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (session['userID'], salary_amount, month, year, created_at))
+
         db.commit()
-        cur.close()
 
-        flash("Salary Added Successfully", "success")
+        flash("Salary added successfully!", "success")
         return redirect(url_for('addTransactions'))
 
     return render_template("addSalary.html")
 
 
+# ----------------- ADD TRANSACTIONS -----------------
 @app.route('/addTransactions', methods=['GET', 'POST'])
 @is_logged_in
 def addTransactions():
-    # ---------- POST: Add a new transaction ----------
+    db = get_db()
+    cur = db.cursor()
+
+    # ---------- SAVE NEW TRANSACTION ----------
     if request.method == 'POST':
         amount = request.form['amount']
         description = request.form['description']
         category = request.form['category']
+
         date = request.form.get('date')
-
         if date:
-            date = date.replace('T', ' ')
+            date = date.replace("T", " ")  # convert HTML datetime-local format
         else:
-            date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
+        cur.execute("""
+            INSERT INTO transactions (user_id, amount, description, category, date)
+            VALUES (?, ?, ?, ?, ?)
+        """, (session['userID'], amount, description, category, date))
 
-        cur = db.cursor(dictionary=True)
-
-        cur.execute(
-            "INSERT INTO transactions (user_id, amount, description, category, date) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (session['userID'], amount, description, category, date)
-        )
         db.commit()
-        cur.close()
-        db.close()
+        flash("Transaction added successfully!", "success")
+        return redirect(url_for("addTransactions"))
 
-        flash('Transaction Successfully Recorded', 'success')
-        return redirect(url_for('addTransactions'))
-
-
-    # ---------- GET: Load page with salary, expenses, categories ----------
-    db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
-
-    cur = db.cursor(dictionary=True)
-
-    # Total monthly expenses
-    cur.execute(
-        "SELECT SUM(amount) AS total FROM transactions "
-        "WHERE MONTH(date)=MONTH(CURRENT_DATE()) "
-        "AND YEAR(date)=YEAR(CURRENT_DATE()) "
-        "AND user_id=%s",
-        (session['userID'],)     # ✔ FIXED
-    )
+    # ---------- SUMMARY FOR CURRENT MONTH ----------
+    cur.execute("""
+        SELECT SUM(amount) AS total
+        FROM transactions
+        WHERE user_id = ?
+        AND strftime('%m', date) = strftime('%m', 'now')
+        AND strftime('%Y', date) = strftime('%Y', 'now')
+    """, (session['userID'],))
     totalExpenses = cur.fetchone()['total'] or 0
 
-    # Salary fetch
-    cur.execute(
-        "SELECT salary_amount FROM salary "
-        "WHERE user_id=%s "
-        "AND month=MONTH(CURRENT_DATE()) "
-        "AND year=YEAR(CURRENT_DATE()) "
-        "ORDER BY id DESC LIMIT 1",
-        (session['userID'],)     # ✔ FIXED
-    )
+    # ---------- MONTHLY SALARY ----------
+    cur.execute("""
+        SELECT salary_amount FROM salary
+        WHERE user_id = ?
+        AND month = strftime('%m', 'now')
+        AND year = strftime('%Y', 'now')
+        ORDER BY id DESC LIMIT 1
+    """, (session['userID'],))
     salary_data = cur.fetchone()
     monthly_salary = salary_data['salary_amount'] if salary_data else 0
 
     remaining_balance = monthly_salary - totalExpenses
 
-    # Fetch transactions
-    cur.execute(
-        "SELECT * FROM transactions "
-        "WHERE MONTH(date)=MONTH(CURRENT_DATE()) "
-        "AND YEAR(date)=YEAR(CURRENT_DATE()) "
-        "AND user_id=%s ORDER BY date DESC",
-        (session['userID'],)     # ✔ FIXED
-    )
-    transactions = cur.fetchall()
+    # ---------- FETCH CURRENT MONTH TRANSACTIONS ----------
+    cur.execute("""
+        SELECT * FROM transactions
+        WHERE user_id = ?
+        AND strftime('%m', date) = strftime('%m', 'now')
+        AND strftime('%Y', date) = strftime('%Y', 'now')
+        ORDER BY date DESC
+    """, (session['userID'],))
+    rows = cur.fetchall()
 
-    # ⭐ FETCH USER CATEGORIES (FIXED)
-    cur.execute(
-        "SELECT * FROM categories WHERE user_id=%s",
-        (session['userID'],)     # ✔✔ MOST IMPORTANT FIX
-    )
+    transactions = []
+    for t in rows:
+        original = t['date']
+        try:
+            dt = datetime.datetime.strptime(original, "%Y-%m-%d %H:%M:%S")
+        except:
+            try:
+                dt = datetime.datetime.strptime(original, "%Y-%m-%d %H:%M")
+            except:
+                dt = None
+
+        if dt:
+            if datetime.datetime.now() - dt < datetime.timedelta(hours=12):
+                formatted = timeago.format(dt, datetime.datetime.now())
+            else:
+                formatted = dt.strftime("%d %B, %Y")
+        else:
+            formatted = original
+
+        item = dict(t)
+        item["date"] = formatted
+        transactions.append(item)
+
+    # ---------- LOAD USER CATEGORIES ----------
+    cur.execute("SELECT * FROM categories WHERE user_id = ?", (session['userID'],))
     user_categories = cur.fetchall()
 
-    # Format transaction dates
-    for t in transactions:
-        if isinstance(t['date'], datetime.datetime):
-            if datetime.datetime.now() - t['date'] < datetime.timedelta(days=0.5):
-                t['date'] = timeago.format(t['date'], datetime.datetime.now())
-            else:
-                t['date'] = t['date'].strftime('%d %B, %Y')
+    # ==========================================================
+    # 🚀 CATEGORY-WISE EXPENSE BAR GRAPH (THIS MONTH ONLY)
+    # ==========================================================
+    cur.execute("""
+        SELECT category, SUM(amount) AS total_amount
+        FROM transactions
+        WHERE user_id = ?
+        AND strftime('%m', date) = strftime('%m', 'now')
+        AND strftime('%Y', date) = strftime('%Y', 'now')
+        GROUP BY category
+    """, (session['userID'],))
 
-    cur.close()
-    db.close()
+    cat_rows = cur.fetchall()
 
+    if cat_rows:
+        cat_df = pd.DataFrame(cat_rows, columns=["category", "total_amount"])
+    else:
+        cat_df = pd.DataFrame(columns=["category", "total_amount"])
+
+    fig_cat = go.Figure()
+    fig_cat.add_trace(go.Bar(
+        x=cat_df["category"],
+        y=cat_df["total_amount"],
+        text=cat_df["total_amount"],
+        textposition="outside"
+    ))
+
+    fig_cat.update_layout(
+        title="Category-wise Expenses (This Month)",
+        xaxis_title="Category",
+        yaxis_title="Amount (₹)",
+        bargap=0.3
+    )
+
+    category_bar_graph = fig_cat.to_html(full_html=False)
+
+    # ---------- FINAL PAGE RETURN ----------
     return render_template(
         "addTransactions.html",
         totalExpenses=totalExpenses,
         transactions=transactions,
         monthly_salary=monthly_salary,
         remaining_balance=remaining_balance,
-        user_categories=user_categories   # ✔ dropdown will now show new categories
+        user_categories=user_categories,
+        category_bar_graph=category_bar_graph
     )
 
 
-
+# ----------------- TRANSACTION HISTORY -----------------
 @app.route('/transactionHistory', methods=['GET', 'POST'])
 @is_logged_in
 def transactionHistory():
+    db = get_db()
+    cur = db.cursor()
 
-    month = None
-    year = None
-
-    db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
-
-    cur = db.cursor(dictionary=True)
-
-
-    # ========== POST (when filter used) ==========
+    # --------------------- POST FILTER ---------------------
     if request.method == "POST":
         month = request.form['month']
         year = request.form['year']
 
+        # TOTAL EXPENSE
         if month == "00":
-            cur.execute(
-                "SELECT SUM(amount) AS total FROM transactions WHERE YEAR(date)=%s AND user_id=%s",
-                (year, session['userID'])
-            )
+            cur.execute("""
+                SELECT SUM(amount) AS total FROM transactions
+                WHERE strftime('%Y', date) = ?
+                AND user_id = ?
+            """, (year, session['userID']))
         else:
-            cur.execute(
-                "SELECT SUM(amount) AS total FROM transactions WHERE MONTH(date)=%s AND YEAR(date)=%s AND user_id=%s",
-                (month, year, session['userID'])
-            )
+            cur.execute("""
+                SELECT SUM(amount) AS total FROM transactions
+                WHERE strftime('%m', date) = ?
+                AND strftime('%Y', date) = ?
+                AND user_id = ?
+            """, (month, year, session['userID']))
 
         totalExpenses = cur.fetchone()['total'] or 0
 
-        cur.execute(
-            "SELECT salary_amount FROM salary WHERE user_id=%s AND month=%s AND year=%s ORDER BY id DESC LIMIT 1",
-            (session['userID'], month, year)
-        )
+        # SALARY
+        cur.execute("""
+            SELECT salary_amount FROM salary
+            WHERE user_id = ? AND month = ? AND year = ?
+            ORDER BY id DESC LIMIT 1
+        """, (session['userID'], month, year))
         s = cur.fetchone()
+
         monthly_salary = s['salary_amount'] if s else 0
         saved_salary = monthly_salary - totalExpenses
 
+        # FETCH TRANSACTIONS
         if month == "00":
-            cur.execute(
-                "SELECT * FROM transactions WHERE YEAR(date)=%s AND user_id=%s ORDER BY date DESC",
-                (year, session['userID'])
-            )
+            cur.execute("""
+                SELECT * FROM transactions
+                WHERE strftime('%Y', date) = ?
+                AND user_id = ?
+                ORDER BY date DESC
+            """, (year, session['userID']))
         else:
-            cur.execute(
-                "SELECT * FROM transactions WHERE MONTH(date)=%s AND YEAR(date)=%s AND user_id=%s ORDER BY date DESC",
-                (month, year, session['userID'])
-            )
+            cur.execute("""
+                SELECT * FROM transactions
+                WHERE strftime('%m', date) = ?
+                AND strftime('%Y', date) = ?
+                AND user_id = ?
+                ORDER BY date DESC
+            """, (month, year, session['userID']))
 
-        transactions = cur.fetchall()
-        cur.close()
+        rows = cur.fetchall()
 
-        return render_template(
-            'transactionHistory.html',
-            transactions=transactions,
-            totalExpenses=totalExpenses,
-            monthly_salary=monthly_salary,
-            saved_salary=saved_salary
-        )
+    # --------------------- DEFAULT GET: CURRENT MONTH ---------------------
+    else:
+        cur.execute("""
+            SELECT SUM(amount) AS total FROM transactions
+            WHERE strftime('%m', date) = strftime('%m', 'now')
+            AND strftime('%Y', date) = strftime('%Y', 'now')
+            AND user_id = ?
+        """, (session['userID'],))
+        totalExpenses = cur.fetchone()['total'] or 0
 
-    # ---------------- GET DEFAULT (CURRENT MONTH) --------------------
-    cur.execute(
-        "SELECT SUM(amount) AS total FROM transactions WHERE MONTH(date)=MONTH(CURRENT_DATE()) AND YEAR(date)=YEAR(CURRENT_DATE()) AND user_id=%s",
-        [session['userID']]
-    )
-    totalExpenses = cur.fetchone()['total'] or 0
+        # Salary for current month
+        cur.execute("""
+            SELECT salary_amount FROM salary
+            WHERE user_id = ?
+            AND month = strftime('%m', 'now')
+            AND year = strftime('%Y', 'now')
+            ORDER BY id DESC LIMIT 1
+        """, (session['userID'],))
+        s = cur.fetchone()
 
-    cur.execute(
-        "SELECT salary_amount FROM salary WHERE user_id=%s AND month=MONTH(CURRENT_DATE()) AND year=YEAR(CURRENT_DATE()) ORDER BY id DESC LIMIT 1",
-        [session['userID']]
-    )
-    s = cur.fetchone()
-    monthly_salary = s['salary_amount'] if s else 0
-    saved_salary = monthly_salary - totalExpenses
+        monthly_salary = s['salary_amount'] if s else 0
+        saved_salary = monthly_salary - totalExpenses
 
-    cur.execute(
-        "SELECT * FROM transactions WHERE MONTH(date)=MONTH(CURRENT_DATE()) AND YEAR(date)=YEAR(CURRENT_DATE()) AND user_id=%s ORDER BY date DESC",
-        [session['userID']]
-    )
-    transactions = cur.fetchall()
-    cur.close()
+        # Fetch current month transactions
+        cur.execute("""
+            SELECT * FROM transactions
+            WHERE strftime('%m', date) = strftime('%m', 'now')
+            AND strftime('%Y', date) = strftime('%Y', 'now')
+            AND user_id = ?
+            ORDER BY date DESC
+        """, (session['userID'],))
+        rows = cur.fetchall()
+
+    # --------------------- FORMAT DATES SAFELY ---------------------
+    transactions = []
+    for t in rows:
+        original_date = t['date']
+        dt = None
+
+        # Try parsing date
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                dt = datetime.datetime.strptime(original_date, fmt)
+                break
+            except:
+                continue
+
+        if dt:
+            try:
+                formatted = dt.strftime("%d %B %Y, %I:%M %p")
+            except:
+                formatted = original_date
+        else:
+            formatted = original_date
+
+        # Convert row into dict
+        record = dict(t)
+        record['date'] = formatted
+        transactions.append(record)
 
     return render_template(
-        'transactionHistory.html',
+        "transactionHistory.html",
         transactions=transactions,
         totalExpenses=totalExpenses,
         monthly_salary=monthly_salary,
         saved_salary=saved_salary
     )
-  
 
+
+# ----------------- EDIT TRANSACTION -----------------
 @app.route('/editCurrentMonthTransaction/<string:id>', methods=['GET', 'POST'])
 @is_logged_in
 def editCurrentMonthTransaction(id):
-    # Create cursor
-    db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
+    db = get_db()
+    cur = db.cursor()
 
-    cur = db.cursor(dictionary=True)
+    cur.execute("SELECT * FROM transactions WHERE id = ? AND user_id = ?", (id, session['userID']))
+    trans = cur.fetchone()
 
+    if not trans:
+        flash("Transaction not found", "danger")
+        return redirect(url_for('addTransactions'))
 
-    # Get transaction by id
-    cur.execute("SELECT * FROM transactions WHERE id = %s", [id])
-
-    transaction = cur.fetchone()
-    cur.close()
-    # Get form
-    form = TransactionForm(request.form)
-
-    # Populate transaction form fields
-    form.amount.data = transaction['amount']
-    form.description.data = transaction['description']
-
-    if request.method == 'POST' and form.validate():
+    if request.method == "POST":
         amount = request.form['amount']
         description = request.form['description']
 
-        # Create Cursor
-        db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="",
-    database="expense_tracker"
-)
-        cur = db.cursor(dictionary=True)
+        cur.execute("""
+            UPDATE transactions
+            SET amount = ?, description = ?
+            WHERE id = ? AND user_id = ?
+        """, (amount, description, id, session['userID']))
 
-        # Execute
-        cur.execute("UPDATE transactions SET amount=%s, description=%s WHERE id = %s",
-                    (amount, description, id))
-        # Commit to DB
-        db.commit() 
-
-        # Close connection
-        cur.close()
-
-        flash('Transaction Updated', 'success')
-
+        db.commit()
+        flash("Transaction updated!", "success")
         return redirect(url_for('addTransactions'))
 
-    return render_template('editTransaction.html', form=form)
+    return render_template("editTransaction.html", transaction=trans)
 
 
-# Delete transaction
+# ----------------- DELETE TRANSACTION -----------------
 @app.route('/deleteCurrentMonthTransaction/<string:id>', methods=['POST'])
 @is_logged_in
 def deleteCurrentMonthTransaction(id):
-    db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
+    db = get_db()
+    cur = db.cursor()
 
-    cur = db.cursor(dictionary=True)    
-    cur.execute("DELETE FROM transactions WHERE id=%s AND user_id=%s", (id, session['userID']))
+    cur.execute("DELETE FROM transactions WHERE id = ? AND user_id = ?", (id, session['userID']))
     db.commit()
-    cur.close()
-    flash("Transaction Deleted Successfully", "success")
+
+    flash("Transaction deleted!", "success")
     return redirect(url_for('addTransactions'))
 
 
-class RequestResetForm(Form):
-    email = StringField('Email address', [
-                       validators.DataRequired(), validators.Email()])
-
-
-@app.route("/reset_request", methods=['GET', 'POST'])
-def reset_request():
-    if 'logged_in' in session and session['logged_in'] == True:
-        flash('You are already logged in', 'info')
-        return redirect(url_for('index'))
-    form = RequestResetForm(request.form)
-    if request.method == 'POST' and form.validate():
-        email = form.email.data
-        cur = mysql.connection.cursor()
-        result = cur.execute(
-            "SELECT id,username,email FROM users WHERE email = %s", [email])
-        if result == 0:
-            flash(
-                'There is no account with that email. You must register first.', 'warning')
-            return redirect(url_for('signup'))
-        else:
-            data = cur.fetchone()
-            user_id = data['id']
-            user_email = data['email']
-            cur.close()
-            s = Serializer(app.config['SECRET_KEY'])
-            token = s.dumps({'user_id': user_id})
-            msg = Message('Password Reset Request',
-                          sender='noreply@demo.com', recipients=[user_email])
-            msg.body = f'''To reset your password, visit the following link:
-            {url_for('reset_token', token=token, _external=True)}
-            If you did not make password reset request then simply ignore this email and no changes will be made.
-            Note:This link is valid only for 30 mins from the time you requested a password change request.
-                                                   '''
-            mail.send(msg)
-            flash(
-                'An email has been sent with instructions to reset your password.', 'info')
-            return redirect(url_for('login'))
-    return render_template('reset_request.html', form=form)
-
-
-class ResetPasswordForm(Form):
-    password = PasswordField('Password', [
-        validators.DataRequired(),
-        validators.EqualTo('confirm', message='Passwords do not match')
-    ])
-    confirm = PasswordField('Confirm Password')
-
-
-@app.route("/reset_password/<token>", methods=['GET', 'POST'])
-def reset_token(token):
-    if 'logged_in' in session and session['logged_in'] == True:
-        flash('You are already logged in', 'info')
-        return redirect(url_for('index'))
-        s = Serializer(app.config['SECRET_KEY'])
-        try:
-            data = s.loads(token, max_age=1800)
-            user_id = data['user_id']
-        except:
-            flash("Token is invalid or expired", "warning")
-            return redirect(url_for("reset_request"))
-    cur.execute("SELECT id FROM users WHERE id = %s", [user_id])
-    data = cur.fetchone()
-    cur.close()
-    user_id = data['id']
-    form = ResetPasswordForm(request.form)
-    if request.method == 'POST' and form.validate():
-        password = sha256_crypt.encrypt(str(form.password.data))
-        cur = mysql.connection.cursor()
-        cur.execute(
-            "UPDATE users SET password = %s WHERE id = %s", (password, user_id))
-        db.commit()
-        cur.close()
-        flash('Your password has been updated! You are now able to log in', 'success')
-        return redirect(url_for('login'))
-    return render_template('reset_token.html', title='Reset Password', form=form)
-
-# Category Wise Pie Chart For Current Year As Percentage #
-@app.route('/category-data')
-def category_data():
-    db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
- 
-    cur = db.cursor(dictionary=True)
-
-
-    query = """
-        SELECT SUM(amount) AS amount, category
-        FROM transactions
-        WHERE YEAR(date) = YEAR(CURRENT_DATE())
-          AND user_id = %s
-        GROUP BY category
-        ORDER BY category
-    """
-    
-    cur.execute(query, (session['userID'],))
-    rows = cur.fetchall()
-
-    amounts = [float(row['amount']) for row in rows]
-    categories = [row['category'] for row in rows]
-
-    return jsonify({
-        'amount': amounts,
-        'category': categories
-    })
-
-# ... other imports above ...
-
-# Replace your existing /dashboard route with this:
-@app.route('/dashboard')
-@is_logged_in
-def dashboard():
-    # require userID
-    user_id = session.get('userID')
-    if not user_id:
-        flash("Please log in to view the dashboard", "info")
-        return redirect(url_for('login'))
-
-    # get cleaned data for this user
-    df = get_clean_data_for_user(user_id)
-
-    # ---- Prepare Monthly Trend (last 12 months) ----
-    df['month'] = df['date'].dt.to_period('M').dt.to_timestamp()
-    monthly_sum = (df.groupby('month')['amount'].sum()
-                     .reset_index().sort_values('month'))
-
-    # if empty, create placeholder
-    if monthly_sum.empty:
-        monthly_sum = pd.DataFrame({'month': [], 'amount': []})
-
-    fig_month = go.Figure()
-    fig_month.add_trace(go.Scatter(
-        x=monthly_sum['month'].dt.strftime('%Y-%m'),
-        y=monthly_sum['amount'],
-        mode='lines+markers',
-        name='Monthly'
-    ))
-    fig_month.update_layout(
-        title='Monthly Spending (Last 12 months)',
-        template='plotly_dark',
-        margin=dict(t=40, b=30)
-    )
-    monthly_graph = fig_month.to_html(full_html=False)
-
-    # ---- Yearly Trend ----
-    df['year'] = df['date'].dt.year
-    yearly_sum = df.groupby('year')['amount'].sum().reset_index().sort_values('year')
-    fig_year = go.Figure()
-    fig_year.add_trace(go.Bar(x=yearly_sum['year'].astype(str), y=yearly_sum['amount']))
-    fig_year.update_layout(title='Yearly Spending', template='plotly_dark', margin=dict(t=40, b=30))
-    yearly_graph = fig_year.to_html(full_html=False)
-
-    # ---- Category Pie ----
-    category_sum = df.groupby('category')['amount'].sum().reset_index().sort_values('amount', ascending=False)
-    fig_pie = go.Figure(data=[go.Pie(labels=category_sum['category'], values=category_sum['amount'], hole=0.35)])
-    fig_pie.update_layout(title='Category-wise Spending', template='plotly_dark', margin=dict(t=40, b=30))
-    pie_graph = fig_pie.to_html(full_html=False)
-
-    # ---- Daily Trend (last 30 days) ----
-    cutoff = pd.Timestamp.today() - pd.Timedelta(days=30)
-    last30 = df[df['date'] >= cutoff]
-    daily = last30.groupby(last30['date'].dt.date)['amount'].sum().reset_index()
-    fig_day = go.Figure()
-    fig_day.add_trace(go.Scatter(x=daily['date'].astype(str), y=daily['amount'], mode='lines+markers'))
-    fig_day.update_layout(title='Daily (Last 30 days)', template='plotly_dark', margin=dict(t=40, b=30))
-    daily_graph = fig_day.to_html(full_html=False)
-
-    # ---- Summary Metrics ----
-    total_spent = float(df['amount'].sum()) if not df.empty else 0.0
-    avg_spent = float(df['amount'].mean()) if not df.empty else 0.0
-    max_spent = float(df['amount'].max()) if not df.empty else 0.0
-    min_spent = float(df['amount'].min()) if not df.empty else 0.0
-    top_categories = category_sum.head(5).to_dict(orient='records')
-
-    # ----yearly metrics-----
-
-    # ---- Yearly Saved Salary Calculation ----
-    db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
-
-    cur = db.cursor(dictionary=True)
-
-    cur.execute("""
-    SELECT year, SUM(salary_amount) AS yearly_salary
-    FROM salary
-    WHERE user_id=%s
-    GROUP BY year
-    ORDER BY year
-    """, [session['userID']])
-    salary_year_data = cur.fetchall()
-    cur.close()
-
-    salary_df = pd.DataFrame(salary_year_data)
-
-# Convert to integer
-    salary_df['year'] = salary_df['year'].astype(int)
-
-# Expense grouped by year
-    df['year'] = df['date'].dt.year.astype(int)
-    expense_yearly = df.groupby('year')['amount'].sum().reset_index()
-
-# Merge salary & expense
-    yearly_saved = pd.merge(salary_df, expense_yearly, on="year", how="left").fillna(0)
-
-# ---- CALCULATE SAVINGS ----
-    yearly_saved['saved'] = yearly_saved['yearly_salary'].astype(float) - yearly_saved['amount'].astype(float)
-
-
-# Convert for charts
-    yearly_labels = yearly_saved['year'].astype(str).tolist()
-    yearly_saved_values = yearly_saved['saved'].tolist()
-
-    return render_template(
-     'dashboard.html',
-     yearly_labels=yearly_labels,
-    yearly_saved_values=yearly_saved_values,
-    monthly_graph=monthly_graph,
-    yearly_graph=yearly_graph,
-    pie_graph=pie_graph,
-    daily_graph=daily_graph,
-    total_spent=total_spent,
-    avg_spent=avg_spent,
-    max_spent=max_spent,
-    min_spent=min_spent,
-    top_categories=top_categories
-)
-
-
-@app.route('/addCategory', methods=['GET','POST'])
-@is_logged_in
-def addCategory():
-    print("🔥 ROUTE REACHED. METHOD =", request.method)   # DEBUG
-
-    if request.method == 'POST':
-        print("📩 FORM RECEIVED =", request.form)         # DEBUG
-
-        category_name = request.form.get('category_name')
-        print("📌 CATEGORY =", category_name)              # DEBUG
-
-        if not category_name:
-            print("❌ CATEGORY EMPTY")
-            flash("Category name empty", "danger")
-            return redirect(url_for('manageCategories'))
-
-        db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
-
-        cur = db.cursor(dictionary=True)
-
-        cur.execute(
-            "INSERT INTO categories (user_id, category_name) VALUES (%s, %s)",
-            (session['userID'], category_name)
-        )
-        db.commit()
-        cur.close()
-        db.close()
-
-        print("✅ INSERTED SUCCESSFULLY")
-        return redirect(url_for('manageCategories'))
-
-    return redirect(url_for('manageCategories'))
-
-
+# ----------------- CATEGORIES -----------------
 @app.route('/categories')
 @is_logged_in
 def manageCategories():
-    db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
+    db = get_db()
+    cur = db.cursor()
 
-    cur = db.cursor(dictionary=True)
-
-    cur.execute("SELECT * FROM categories WHERE user_id=%s", (session['userID'],))
+    cur.execute("SELECT * FROM categories WHERE user_id = ?", (session['userID'],))
     categories = cur.fetchall()
-    cur.close()
-    db.close()
-    return render_template('categories.html', categories=categories)
+
+    return render_template("categories.html", categories=categories)
+
+
+@app.route('/addCategory', methods=['POST'])
+@is_logged_in
+def addCategory():
+    name = request.form.get("category_name")
+
+    if not name:
+        flash("Category cannot be empty", "danger")
+        return redirect(url_for('manageCategories'))
+
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("INSERT INTO categories (user_id, category_name) VALUES (?, ?)",
+                (session['userID'], name))
+    db.commit()
+
+    flash("Category added!", "success")
+    return redirect(url_for('manageCategories'))
+
 
 @app.route('/editCategory/<string:id>', methods=['GET', 'POST'])
 @is_logged_in
 def editCategory(id):
-    db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
+    db = get_db()
+    cur = db.cursor()
 
-    cur = db.cursor(dictionary=True)
-
-    # --- Fetch category ---
-    cur.execute("SELECT * FROM categories WHERE id=%s AND user_id=%s", (id, session['userID']))
+    cur.execute("SELECT * FROM categories WHERE id = ? AND user_id = ?", (id, session['userID']))
     category = cur.fetchone()
 
     if not category:
         flash("Category not found!", "danger")
         return redirect(url_for('manageCategories'))
 
-    # --- POST = update ---
     if request.method == "POST":
         new_name = request.form['category_name']
-        cur.execute("UPDATE categories SET category_name=%s WHERE id=%s AND user_id=%s",
-                    (new_name, id, session['userID']))
-        db.commit()
-        cur.close()
-        db.close()
 
-        flash("Category Updated Successfully", "success")
+        cur.execute("""
+            UPDATE categories SET category_name = ?
+            WHERE id = ? AND user_id = ?
+        """, (new_name, id, session['userID']))
+
+        db.commit()
+        flash("Category updated!", "success")
         return redirect(url_for('manageCategories'))
 
-    cur.close()
-    db.close()
+    return render_template("editCategory.html", category=category)
 
-    return render_template('editCategory.html', category=category)
 
 @app.route('/deleteCategory/<string:id>', methods=['POST'])
 @is_logged_in
 def deleteCategory(id):
-    db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
+    db = get_db()
+    cur = db.cursor()
 
-    cur = db.cursor(dictionary=True)
-
-    cur.execute("DELETE FROM categories WHERE id=%s AND user_id=%s", (id, session['userID']))
+    cur.execute("DELETE FROM categories WHERE id = ? AND user_id = ?", (id, session['userID']))
     db.commit()
 
-    cur.close()
-    db.close()
-
-    flash("Category Deleted Successfully", "success")
+    flash("Category deleted!", "success")
     return redirect(url_for('manageCategories'))
 
-
-@app.route('/deleteTransaction/<string:id>', methods=['POST'])
+# ----------------- CATEGORY DATA API (Pie Chart) -----------------
+@app.route('/category-data')
 @is_logged_in
-def deleteTransaction(id):
-    db = mysql.connector.connect(
-    host=os.getenv("MYSQLHOST"),
-    user=os.getenv("MYSQLUSER"),
-    password=os.getenv("MYSQLPASSWORD"),
-    database=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
+def category_data():
+    db = get_db()
+    cur = db.cursor()
 
-    cur = db.cursor(dictionary=True)
+    cur.execute("""
+        SELECT category, SUM(amount) AS amount
+        FROM transactions
+        WHERE user_id = ?
+          AND strftime('%Y', date) = strftime('%Y', 'now')
+        GROUP BY category
+    """, (session['userID'],))
 
-    cur.execute("DELETE FROM transactions WHERE id=%s AND user_id=%s", (id, session['userID']))
-    db.commit()
-    cur.close()
+    rows = cur.fetchall()
 
-    flash("Transaction Deleted Successfully", "success")
-    return redirect(url_for('transactionHistory'))
-    
+    amounts = [float(r['amount']) for r in rows]
+    categories = [r['category'] for r in rows]
 
+    return jsonify({
+        'amount': amounts,
+        'category': categories
+    })
+
+# ----------------- DASHBOARD -----------------
+@app.route('/dashboard')
+@is_logged_in
+def dashboard():
+    user_id = session.get("userID")
+
+    # If no file, return empty dashboard safely
+    if not os.path.exists("cleaned_data.csv"):
+        return render_template("dashboard.html",
+                               prediction=None,
+                               monthly_graph="", yearly_graph="", daily_graph="", pie_graph="",
+                               total_spent=0, avg_spent=0, max_spent=0, min_spent=0,
+                               top_categories=[], yearly_labels=[], yearly_saved_values=[])
+
+    df = pd.read_csv("cleaned_data.csv")
+
+    if df.empty:
+        return render_template("dashboard.html",
+                               prediction=None,
+                               monthly_graph="", yearly_graph="", daily_graph="", pie_graph="",
+                               total_spent=0, avg_spent=0, max_spent=0, min_spent=0,
+                               top_categories=[], yearly_labels=[], yearly_saved_values=[])
+
+    # ---------------------------
+    # FIX DATE COLUMN
+    # ---------------------------
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["date"].notnull()].reset_index(drop=True)
+
+    df["year"] = df["date"].dt.year.astype(int)
+    df["month"] = df["date"].dt.month.astype(int)
+    df["category"] = df["category"].fillna("Others")
+
+    # ---------------------------
+    # SUMMARY VALUES
+    # ---------------------------
+    total_spent = float(df["amount"].sum())
+    avg_spent = float(df["amount"].mean())
+    max_spent = float(df["amount"].max())
+    min_spent = float(df["amount"].min())
+
+    # ---------------------------
+    # TOP CATEGORIES
+    # ---------------------------
+    category_sum = df.groupby("category")["amount"].sum().reset_index()
+    top_categories = (
+        category_sum.sort_values("amount", ascending=False)
+                    .head(5)
+                    .to_dict(orient="records")
+    )
+
+    # ---------------------------
+    # MONTHLY TREND
+    # ---------------------------
+    monthly = df.groupby(df["date"].dt.to_period("M"))["amount"].sum().reset_index()
+    monthly["month"] = monthly["date"].astype(str)   # <-- correct
+
+    fig_m = go.Figure()
+    fig_m.add_trace(go.Scatter(x=monthly["month"], y=monthly["amount"],
+                               mode="lines+markers"))
+    fig_m.update_layout(yaxis=dict(tickformat=",d"))
+    monthly_graph = fig_m.to_html(full_html=False)
+
+    # ---------------------------
+    # DAILY TREND (LAST 30 DAYS)
+    # ---------------------------
+    last30 = df[df["date"] >= pd.Timestamp.today() - pd.Timedelta(days=30)]
+    daily = last30.groupby(last30["date"].dt.date)["amount"].sum().reset_index()
+
+    fig_d = go.Figure()
+    if not daily.empty:
+        fig_d.add_trace(go.Bar(x=daily["date"].astype(str), y=daily["amount"]))
+    daily_graph = fig_d.to_html(full_html=False)
+
+    # ---------------------------
+    # YEARLY EXPENSE
+    # ---------------------------
+    yearly_exp = df.groupby("year")["amount"].sum().reset_index()
+
+    # ---------------------------
+    # YEARLY SALARY FROM DB
+    # ---------------------------
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT year, SUM(salary_amount)
+        FROM salary
+        WHERE user_id=?
+        GROUP BY year
+    """, (user_id,))
+    rows = cur.fetchall()
+    salary_df = pd.DataFrame(rows, columns=["year", "salary"])
+    salary_df["year"] = salary_df["year"].astype(int)
+
+    # ---------------------------
+    # MERGE BOTH
+    # ---------------------------
+    combined = pd.merge(yearly_exp, salary_df, on="year", how="outer").fillna(0)
+    combined["saved"] = combined.apply(lambda r: max(r["salary"] - r["amount"], 0), axis=1)
+
+
+    # YEARLY GRAPH
+    fig_y = go.Figure()
+    fig_y.add_trace(go.Bar(name="Expense", x=combined["year"], y=combined["amount"]))
+    fig_y.add_trace(go.Bar(name="Salary", x=combined["year"], y=combined["salary"]))
+    fig_y.add_trace(go.Bar(name="Saved", x=combined["year"], y=combined["saved"]))
+
+    fig_y.update_layout(
+        barmode="group",
+        yaxis=dict(tickformat=",d")   # <-- removes K or M formatting
+    )
+
+    yearly_graph = fig_y.to_html(full_html=False)
+
+
+    # ---------------------------
+    # PIE CHART
+    # ---------------------------
+    fig_p = go.Figure(data=[go.Pie(labels=category_sum["category"],
+                                   values=category_sum["amount"])])
+    pie_graph = fig_p.to_html(full_html=False)
+
+    # ---------------------------
+    # PREDICTION
+    # ---------------------------
+    try:
+        prediction = predict_next_month()
+    except:
+        prediction = None
+
+    # ---------------------------
+    # RENDER PAGE
+    # ---------------------------
+    return render_template(
+        "dashboard.html",
+        prediction=prediction,
+        monthly_graph=monthly_graph,
+        yearly_graph=yearly_graph,
+        pie_graph=pie_graph,
+        daily_graph=daily_graph,
+        top_categories=top_categories,
+        total_spent=total_spent,
+        avg_spent=avg_spent,
+        max_spent=max_spent,
+        min_spent=min_spent,
+        yearly_labels=combined["year"].astype(str).tolist(),
+        yearly_saved_values=combined["saved"].tolist()
+    )
+
+
+
+@app.route('/upload_excel', methods=['POST'])
+def upload_excel():
+    file = request.files.get("excel_file")
+
+    # 1. Check if file exists
+    if not file or file.filename.strip() == "":
+        flash("Please select a CSV or Excel file.", "danger")
+        return redirect(url_for("dashboard"))
+
+    filename = file.filename.lower()
+
+    # 2. Read file safely
+    try:
+        if filename.endswith(".csv"):
+            df = pd.read_csv(file, encoding="utf-8")
+        elif filename.endswith(".xlsx") or filename.endswith(".xls"):
+            df = pd.read_excel(file)
+        else:
+            flash("Only CSV or Excel files are supported.", "danger")
+            return redirect(url_for("dashboard"))
+    except Exception as e:
+        flash(f"Error reading file: {str(e)}", "danger")
+        return redirect(url_for("dashboard"))
+
+    # 3. Normalize column names
+    df.columns = df.columns.str.lower().str.strip()
+
+    # 4. Required columns
+    if "date" not in df.columns or "amount" not in df.columns:
+        flash("File must contain 'date' and 'amount' columns!", "danger")
+        return redirect(url_for("dashboard"))
+
+    # 5. Clean DATE
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["date"].notnull()]
+
+    # 6. Clean AMOUNT (no K, no conversion)
+    df["amount"] = df["amount"].astype(str)
+
+    # Remove currency symbols and commas only
+    df["amount"] = (
+        df["amount"]
+        .str.replace("₹", "", regex=False)
+        .str.replace(",", "", regex=False)
+        .str.strip()
+    )
+
+    # Convert to number
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+    df = df[df["amount"].notnull()]
+
+    # Remove extreme wrong values above 2 lakh (your limit)
+    df = df[df["amount"] <= 200000]
+
+    # 7. Category
+    if "category" not in df.columns:
+        df["category"] = "Others"
+    else:
+        df["category"] = df["category"].fillna("Others")
+
+    # 8. Add year & month
+    df["year"] = df["date"].dt.year.astype(int)
+    df["month"] = df["date"].dt.month.astype(int)
+
+    # 9. Remove duplicates
+    df = df.drop_duplicates()
+
+    # 10. Sort
+    df = df.sort_values("date").reset_index(drop=True)
+
+    # 11. Save cleaned file
+    try:
+        df.to_csv("cleaned_data.csv", index=False)
+    except Exception as e:
+        flash(f"Could not save cleaned data: {e}", "danger")
+        return redirect(url_for("dashboard"))
+
+    flash("File cleaned & uploaded successfully!", "success")
+
+    return redirect(url_for("dashboard"))
+
+
+def train_model():
+    if not os.path.exists("cleaned_data.csv"):
+        return
+
+    df = pd.read_csv("cleaned_data.csv")
+
+    if df.empty:
+        return
+
+    if "year" not in df.columns or "month" not in df.columns:
+        # Recreate if missing
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df[df["date"].notnull()]
+        df["year"] = df["date"].dt.year.astype(int)
+        df["month"] = df["date"].dt.month.astype(int)
+
+    monthly = df.groupby(["year", "month"])["amount"].sum().reset_index()
+
+    if monthly.empty or len(monthly) < 2:
+        return
+
+    monthly["month_index"] = range(1, len(monthly) + 1)
+
+    X = monthly["month_index"].values
+    y = monthly["amount"].values
+
+    if len(X) == 0 or len(y) == 0:
+        return
+
+    mean_x = X.mean()
+    mean_y = y.mean()
+
+    numerator = ((X - mean_x) * (y - mean_y)).sum()
+    denominator = ((X - mean_x) ** 2).sum()
+
+    if denominator == 0:
+        return
+
+    m = numerator / denominator
+    c = mean_y - (m * mean_x)
+
+    model = {"m": float(m), "c": float(c)}
+    pickle.dump(model, open(MODEL_PATH, "wb"))
+
+def predict_next_month():
+    if not os.path.exists(MODEL_PATH) or not os.path.exists("cleaned_data.csv"):
+        return None
+
+    df = pd.read_csv("cleaned_data.csv")
+
+    if df.empty:
+        return None
+
+    if "year" not in df.columns or "month" not in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df[df["date"].notnull()]
+        df["year"] = df["date"].dt.year.astype(int)
+        df["month"] = df["date"].dt.month.astype(int)
+
+    monthly = df.groupby(["year", "month"])["amount"].sum().reset_index()
+
+    if monthly.empty:
+        return None
+
+    next_index = len(monthly) + 1
+
+    model = pickle.load(open(MODEL_PATH, "rb"))
+    prediction = model["m"] * next_index + model["c"]
+
+    return round(float(prediction), 2)
+
+
+# ----------------- HOME PAGE -----------------
+@app.route('/')
+def index():
+    return render_template("index.html")
+
+
+# ----------------- FINAL APP RUN -----------------
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 5000)),
-        debug=False
+        debug=True
     )

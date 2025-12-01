@@ -101,7 +101,7 @@
                         <td>{{transaction.description}}</td>
                         <td><a href="editTransaction/{{transaction.id}}" class="btn btn-primary btn-sm">Edit</a></td>
                         <td>
-                            <form method="POST" action="{{ url_for('deleteTransaction', id=transaction.id) }}">
+                            <form method="POST" action="{{ url_for('deleteCurrentMonthTransaction', id=transaction.id) }}">
                                 <button type="submit" class="btn btn-danger btn-sm">Delete</button>
                             </form>
                         </td>
